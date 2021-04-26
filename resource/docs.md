@@ -18,7 +18,9 @@ __Filter options:__
 
 - won/lost
 - ranked/unranked
+- turbo/ability draft/all draft
 - radiant/dire
+- solo/in a group
 - significant/not-significant (*turbo matches, etc.*)
 - mid/safe/off/roaming (*lane*)
 - 5 days/2 weeks/1 year
@@ -28,6 +30,9 @@ __Filter options:__
 - as `<hero>`
 - against/vs `<hero>`
 - with `<hero>`
+- `<item>` (*the exact name of the item in your inventory at end of game*)
+- since `<patch>` (*gets matches since that patch was released*)
+- `<patch>` (*gets matches during this patch*)
 
 You can also specify to get matches for someone other than yourself by just @mentioning them or adding their steam id to the query
 
@@ -37,3 +42,6 @@ __Examples:__
 `?matches ranked won this week`
 `?lastmatch offlane on dire as shaker`
 `?matches @Player lost vs axe`
+`?firstmatch turbo with a group`
+`?playerstats radiance puck`
+`?playerstats puck since 7.28`

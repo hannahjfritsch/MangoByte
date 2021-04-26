@@ -5,6 +5,7 @@ from cogs.utils import checks
 from cogs.utils.helpers import *
 from cogs.utils.commandargs import *
 from cogs.utils import drawdota
+from cogs.utils import drawgraph
 import asyncio
 import async_timeout
 import string
@@ -253,6 +254,8 @@ class DotaStats(MangoCog):
 
 	def get_pretty_hero(self, player, use_icons=False):
 		dotabase = self.bot.get_cog("Dotabase")
+		if player["hero_id"] not in self.hero_info:
+			return "**Unknown**"
 		name = self.hero_info[player["hero_id"]]["name"]
 		if use_icons:
 			emoji = self.hero_info[player["hero_id"]]["emoji"]
@@ -473,7 +476,7 @@ class DotaStats(MangoCog):
 
 		embed = discord.Embed(description=description, color=self.embed_color, timestamp=datetime.datetime.utcfromtimestamp(match['start_time']))
 
-		embed.set_author(name=player['personaname'] or "Anonymous", icon_url=self.hero_info[player['hero_id']]['icon'], url="https://www.opendota.com/players/{}".format(steamid))
+		embed.set_author(name=player.get('personaname') or "Anonymous", icon_url=self.hero_info[player['hero_id']]['icon'], url="https://www.opendota.com/players/{}".format(steamid))
 
 		damage_format = "KDA: **{kills}**/**{deaths}**/**{assists}**\n"
 		if player.get("hero_damage") is not None:
@@ -484,6 +487,8 @@ class DotaStats(MangoCog):
 			damage_format += "Tower Damage: {tower_damage:,}\n"
 		embed.add_field(name="Damage", value=damage_format.format(**player))
 
+		if not player.get("total_gold"):
+			player["total_gold"] = 0
 		embed.add_field(name="Economy", value=(
 			"Net Worth: {total_gold:,}\n"
 			"Last Hits: {last_hits:,}\n"
@@ -837,11 +842,11 @@ class DotaStats(MangoCog):
 		else:
 			player_mention = player.steam_id
 
-		embed.set_footer(text=f"For more info, try {self.cmdpfx(ctx)}playerstats {player_mention}")
-
 		rank_icon = await drawdota.dota_rank_icon(playerinfo.get("rank_tier"), playerinfo.get("leaderboard_rank"))
 		rank_icon = discord.File(rank_icon, "rank.png")
 		embed.set_thumbnail(url=f"attachment://{rank_icon.filename}")
+
+		embed.set_footer(text=f"Steam ID: {steam32}")
 
 		await ctx.send(embed=embed, file=rank_icon)
 
@@ -873,7 +878,7 @@ class DotaStats(MangoCog):
 
 	# the main internal logic for the playerstats and twenty commands
 	async def do_playerstats(self, ctx, matchfilter, do_downloaded=False):
-		matchfilter.add_projections([ "kills", "deaths", "assists", "party_size", "version", "hero_id", "lane_role", "is_roaming", "lobby_type", "start_time" ])
+		matchfilter.add_projections([ "kills", "deaths", "assists", "party_size", "version", "hero_id", "lane_role", "is_roaming", "lobby_type", "start_time", "duration" ])
 		steam32 = matchfilter.player.steam_id
 
 		# 
@@ -1012,7 +1017,7 @@ class DotaStats(MangoCog):
 					CoolStat(f"[Matches]({matches_url})", len(player_matches)),
 					CoolStat("Winrate", percent(lambda p: p.get('radiant_win') == (p.get('player_slot') < 128)), filter_key="win"),
 					CoolStat("KDA", f"{avg('kills')}/{avg('deaths')}/{avg('assists')}"),
-					CoolStat("Duration", format_duration_simple(avg('duration'))),
+					CoolStat("Duration", format_duration_simple(avg('duration') or 0)),
 					CoolStat("In a Party", percent(lambda p: p.get('party_size') > 1, needs_key='party_size', round_place="floor")),
 					CoolStat("Ranked", percent(lambda p: p['lobby_type'] == 7), filter_key="lobby_type")
 				]
@@ -1097,12 +1102,11 @@ class DotaStats(MangoCog):
 				]
 			},
 			{
-				"caption": "Wards placed",
+				"caption": "Other",
 				"stats": [
-					CoolStat("None", percent(lambda p: wards_placed(p) == 0), ignore_value=zeropercent),
-					CoolStat("<5", percent(lambda p: wards_placed(p) < 5 and wards_placed(p) != 0), ignore_value=zeropercent),
-					CoolStat("<20", percent(lambda p: wards_placed(p) < 20 and wards_placed(p) >= 5), ignore_value=zeropercent),
-					CoolStat(">=20", percent(lambda p: wards_placed(p) >= 20), ignore_value=zeropercent)
+					CoolStat("APM", avg('actions_per_min')),
+					CoolStat("Pings", avg('pings')),
+					CoolStat("Wards Placed", avg(lambda p: wards_placed(p)))
 				]
 			},
 			{
@@ -1229,12 +1233,18 @@ class DotaStats(MangoCog):
 
 
 	@commands.command(aliases=["analyze", "studymatch"])
-	async def parse(self, ctx, match_id : int):
+	async def parse(self, ctx, match_id : int = None):
 		"""Requests that OpenDota parses a match
 
 		The input should be the match_id of the match
 
-		Note that matches from more than a couple days ago may not be able to be parsed because replay files are not saved that long"""
+		Note that matches from more than a couple days ago may not be able to be parsed because replay files are not saved that long
+
+		Not giving a matchid will make mangobyte attempt to use your last played match"""
+		if match_id is None:		
+			matchfilter = await MatchFilter.init(None, ctx)
+			match_id = await get_lastmatch_id(matchfilter)
+
 		await ctx.message.add_reaction("⏳")
 		await ctx.send("⏳ Requesting a parse...", delete_after=5)
 
@@ -1347,16 +1357,22 @@ class DotaStats(MangoCog):
 		`{cmdpfx}opendota /players/{steamid}`
 		`{cmdpfx}opendota /matches/{match_id}`
 
+		Note that this is just a little tool showcasing how you can use the api. You can also put urls like these in your browser to get the same results, which I'd recommend if you're doing this a lot.
+
 		For more options and a better explanation, check out their [documentation](https://docs.opendota.com)"""
 		query = query.replace("/", " ")
 		query = query.strip()
 		query = "/" + "/".join(query.split(" "))
+		query = re.sub("[^/0-9a-zA-Z?=&_]", "", query)
 
 		with ctx.channel.typing():
 			data = await opendota_query(query)
 
+		tempdir = settings.resource("temp")
+		if not os.path.exists(tempdir):
+			os.makedirs(tempdir)
 		filename = re.search("/([/0-9a-zA-Z]+)", query).group(1).replace("/", "_")
-		filename = settings.resource(f"temp/{filename}.json")
+		filename = tempdir + f"/{filename}.json"
 		write_json(filename, data)
 		await ctx.send(file=discord.File(filename))
 		os.remove(filename)
@@ -1422,17 +1438,108 @@ class DotaStats(MangoCog):
 		Shows all the ability upgrade orders for all heroes in the match"""
 		match = await get_match(match_id)
 
-		match = await get_match(match_id)
-
 		embed = discord.Embed()
 
 		embed.title = f"Match {match_id}"
-		embed.url = f"https://opendota.com/matches/{match_id}/playback"
+		embed.url = f"https://opendota.com/matches/{match_id}"
 
 		async with ctx.channel.typing():
 			image = discord.File(await drawdota.draw_match_ability_upgrades(match), "upgrades.png")
 			embed.set_image(url=f"attachment://{image.filename}")
 			await ctx.send(embed=embed, file=image)
+
+	@commands.command(aliases=["graph", "dotagraph"])
+	async def matchgraph(self, ctx, *, options = ""):
+		"""Creates a graph for a dota match
+
+		Give this match a match_id or it will try to use your last played game
+
+		different types of graphs:
+		teamdiff: creates a graph of the networth/xp differences between the teams
+		playergold: creates a graph of the networths of the players throughout the match
+		(ill probably add more in the futre but thats it for now)
+		"""
+		graphtypes = {
+			"teamdiff": {
+				"pattern": "(team)? ?(diff|networth)",
+				"name": "Team Gold/Experience Difference"
+			},
+			"playergold": {
+				"pattern": "(players? ?(gold)?)",
+				"name": "Player Gold"
+			}
+		}
+
+		graphtype = "teamdiff"
+
+		for key in graphtypes:
+			pattern = graphtypes[key]["pattern"]
+			if re.match(pattern, options):
+				options = re.sub(pattern, "", options)
+				graphtype = key
+				break
+
+		options = options.strip()
+
+		if options.isnumeric():
+			match_id = int(options)
+		elif options == "":
+			try:
+				player = await DotaPlayer.from_author(ctx)
+				steamid = player.steam_id
+			except CustomBadArgument:
+				steamid = None
+				raise SteamNotLinkedError()
+			matchfilter = await MatchFilter.init(None, ctx)
+			match_id = await get_lastmatch_id(matchfilter)
+		else:
+			raise UserError(f"I'm not sure what \"{options}\" means")
+
+		match = await get_match(match_id)
+
+		if not is_parsed(match):
+			raise MatchNotParsedError(match["match_id"], "create a graph")
+
+		embed = discord.Embed()
+
+		embed.title = f"Match {match_id}"
+		embed.url = f"https://opendota.com/matches/{match_id}"
+		embed.set_footer(text=f"This is a rough draft, im planning on making this much better soon")
+
+		embed.description = graphtypes[graphtype]["name"]
+
+		if graphtype == "teamdiff":
+			lines = [ match["radiant_gold_adv"], match["radiant_xp_adv"] ]
+			colors = [ "#FFFF00", "#ADD8E6" ]
+			labels = [ "Gold", "Experience" ]
+		elif graphtype == "playergold":
+			playercolors = {
+				"0": "#3375FF",
+				"1": "#66FFBF",
+				"2": "#BF00BF",
+				"3": "#F3F00B",
+				"4": "#FF6B00",
+				"128": "#FE86C2",
+				"129": "#A1B447",
+				"130": "#65D9F7",
+				"131": "#008321",
+				"132": "#A46900"
+			}
+			lines = []
+			colors = []
+			labels = []
+			for player in match["players"]:
+				colors.append(playercolors[str(player["player_slot"])] if str(player["player_slot"]) else "#FF0000")
+				lines.append(player["gold_t"])
+				labels.append(self.hero_info[player["hero_id"]]["name"] if player["hero_id"] in self.hero_info else "Unknown")
+		else:
+			raise UserError("oops, look like thats not implemented yet")
+
+		async with ctx.channel.typing():
+			image = discord.File(drawgraph.drawgraph(lines, colors, labels), "graph.png")
+			embed.set_image(url=f"attachment://{image.filename}")
+			await ctx.send(embed=embed, file=image)
+
 
 
 	# @commands.command(aliases=["wrapped"])

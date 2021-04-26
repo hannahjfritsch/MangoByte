@@ -193,7 +193,7 @@ class GuildInfo(BotDataItem):
 		},
 		{
 			"key": "ttslang",
-			"default": "en-au",
+			"default": "en",
 			"type": types.GttsLang,
 			"description": "Sets the language/voice that mangobyte will use to speak using the `?tts` command. To see a list of all of the possible languages, check out [this file](https://github.com/mdiller/MangoByte/blob/master/resource/json/gtts_languages.json) in the github repo",
 			"example": "Russian"
@@ -232,6 +232,28 @@ class GuildInfo(BotDataItem):
 			"type": types.TextChannel,
 			"description": "The channel to which mangobyte will post blog notifications",
 			"example": "#dota"
+		},
+		{
+			"key": "ttschannelwarn",
+			"default": True,
+			"type": types.Boolean,
+			"description": "Disable this to prevent mangobyte from saying \"I'm not in a voice channel on this server/guild\" when you type in a tts channel and mangobyte isn't summoned",
+			"example": "disable"
+		},
+		{
+			"key": "allowedbots",
+			"default": [],
+			"list": True,
+			"type": types.UserBot,
+			"description": "A list of bots that mangobyte will not ignore when processing commands or tts",
+			"example": "add @Bot123"
+		},
+		{
+			"key": "allowwebhooks",
+			"default": False,
+			"type": types.Boolean,
+			"description": "Whether or not the bot should pay attention to webhooks when processing commands or tts",
+			"example": "enable"
 		}
 	]
 

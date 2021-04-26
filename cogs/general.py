@@ -7,6 +7,7 @@ from cogs.utils import checks, botdatatypes, wikipedia
 from cogs.audio import AudioPlayerNotFoundError
 from sqlalchemy import func
 from collections import OrderedDict
+import json
 import string
 import random
 import datetime
@@ -95,12 +96,11 @@ class General(MangoCog):
 			await ctx.send(f"There is no userconfig setting called '{name}'. Try one of these:\n{vars_list}")
 			return
 
-		
+		currentvalue = botdata.userinfo(ctx.message.author)[var["key"]]
 		if not value: # We are just getting a value
-			value = botdata.userinfo(ctx.message.author)[var["key"]]
-			await ctx.send(embed=await botdatatypes.localize_embed(ctx, var, value, f"{self.cmdpfx(ctx)}userconfig"))
+			await ctx.send(embed=await botdatatypes.localize_embed(ctx, var, currentvalue, f"{self.cmdpfx(ctx)}userconfig"))
 		else: # We are setting a value
-			value = await botdatatypes.parse(ctx, var, value)
+			value = await botdatatypes.parse(ctx, var, value, currentvalue)
 			botdata.userinfo(ctx.message.author)[var["key"]] = value
 			await ctx.message.add_reaction("✅")
 
@@ -252,7 +252,18 @@ class General(MangoCog):
 		"""A baked Italian dish
 
 		Contains wide strips of pasta cooked and layered with meat or vegetables, cheese, and tomato sauce."""
-		await ctx.send(file=discord.File(settings.resource("images/lasagna.jpg")))
+		lasagna_images = [
+			"images/lasagna1.jpg",
+			"images/lasagna2.jpg",
+			"images/lasagna3.jpg",
+			"images/lasagna4.jpg",
+			"images/lasagna5.jpg",
+			"images/lasagna6.jpg",
+			"images/lasagna7.jpg",
+			"images/lasagna8.jpg",
+			"images/lasagna9.jpg",
+		]
+		await ctx.send(file=discord.File(settings.resource(random.choice(lasagna_images))))
 
 	@commands.command()
 	async def scramble(self, ctx, *, message : str):
@@ -509,6 +520,7 @@ class General(MangoCog):
 
 	@tasks.loop(hours=12)
 	async def update_topgg(self):
+		print("update_topgg() entered")
 		if settings.debug or (settings.topgg is None):
 			return # nothing to do here
 
@@ -528,30 +540,56 @@ class General(MangoCog):
 		except HttpError as e:
 			await self.send_owner(f"Updating top.gg failed with {e.code} error")
 
+	@tasks.loop(hours=12)
+	async def do_infodump(self):
+		print("do_infodump() entered")
+		if not settings.infodump_path:
+			return # nothing to do here
+
+		guilds_count = len(self.bot.guilds)
+		member_count = botdata.count_users_with_key("steam")
+
+		data = {
+			"servers": guilds_count,
+			"registered_users": member_count
+		}
+		try:
+			with open(settings.infodump_path, "w+") as f:
+				f.write(json.dumps(data))
+		except Exception as e:
+			await self.send_owner(f"do_infodump failed w/ exception: {e}")
+
 	@tasks.loop(minutes=5)
 	async def check_dota_patch(self):
+		print("check_dota_patch() entered")
 		url = "https://www.dota2.com/patches/"
 		try:
 			text = await httpgetter.get(url, return_type="text")
 		except HttpError as e:
+			print(f"patches update failed with http {e.code} error")
 			await self.send_owner(f"patches update failed the check with a http {e.code} error")
 			return # failed, so return
 		except Exception as e:
-			await self.send_owner(f"patches update failed the check w/ exception: {e}")
+			etype = str(type(e).__name__)
+			print(f"patches update failed the check w/ exception {etype}: {e}")
+			await self.send_owner(f"patches update failed the check w/ exception {etype}: {e}")
 			return # failed, so return
 		soup = BeautifulSoup(text, "html.parser")
 
-		current_patch = soup.find(name="title").contents[0]
+		print("patch parse starting")
 
-		if botdata["dotapatch"] == current_patch:
+		current_patch = soup.find(name="title").contents[0]
+		old_patch = botdata["dotapatch"]
+
+		if old_patch == current_patch:
 			return # thats the current patch, do nothing
-		if current_patch == "Gameplay Update":
+		if current_patch.strip() == "Gameplay Update":
 			return # thats what happens when theyre tryna switch it and theyre in the process, so give it a minute and try again later
 		print(f"\"{current_patch}\"")
 		print(current_patch == "Gameplay Update")
 		print(str(current_patch) == "Gameplay Update")
+		await self.send_owner(f"patches update triggered: (new one is '{current_patch}', old one was '{old_patch}')")
 		botdata["dotapatch"] = current_patch
-		await self.send_owner("patches update triggered");
 
 		def count_class_in_id(element_id, classname):
 			element = soup.find(id=element_id)
@@ -610,20 +648,31 @@ class General(MangoCog):
 			tasks.append(messageable.send(embed=embed))
 
 		bundler = AsyncBundler(tasks)
+		print("waiting for dota patch bundle to complete")
 		await bundler.wait()
+		print("dota patch bundle completed")
 		await self.send_owner("__Dota Patch Sent!__\n" + bundler.status_as_string())
 
 
 	@commands.Cog.listener()
 	async def on_message(self, message):
-		if message.author.bot and settings.debug:
+		if message.author == self.bot.user:
+			return # ignore stuff from myself
+
+		if message.guild is None:
+			return # only keep going if we're in a guild
+		guildinfo = botdata.guildinfo(message.guild.id)
+
+		if message.author.bot and (message.author.id in guildinfo.allowedbots) or (message.webhook_id and guildinfo.allowwebhooks):
+			# execute this command from a bot because we're allowing it
 			ctx = await self.bot.get_context(message)
 			await self.bot.invoke(ctx)
-		if message.guild is not None and not botdata.guildinfo(message.guild.id).reactions:
-			return
 
-		if (message.author == self.bot.user) or message.content.startswith(self.cmdpfx(message.guild)):
-			return
+		if message.content.startswith(self.cmdpfx(message.guild)):
+			return # ignore stuff that starts with the command prefix
+
+		if not guildinfo.reactions:
+			return # only keep going for guilds with reactions enabled
 
 		random.seed(message.content)
 

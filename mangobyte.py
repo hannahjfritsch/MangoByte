@@ -105,11 +105,16 @@ async def on_ready():
 	await artifact_cog.load_card_sets()
 	bot.help_command.cog = bot.get_cog("General")
 
-	periodic_tasks = [
-		general_cog.update_topgg,
-		general_cog.check_dota_patch,
-		dota_cog.check_dota_blog
-	]
+	# TASKS DISABLED FOR NOW BECAUSE SHIT IS BREAKING
+	# periodic_tasks = [
+	# 	general_cog.check_dota_patch,
+	# 	dota_cog.check_dota_blog
+	# ]
+	periodic_tasks = []
+	if settings.topgg:
+		periodic_tasks.append(general_cog.update_topgg)
+	if settings.infodump_path:
+		periodic_tasks.append(general_cog.do_infodump)
 	# start topgg update service thing
 	for task in periodic_tasks:
 		if (not task.is_running()):
@@ -143,7 +148,6 @@ async def on_ready():
 	message += f"\n\non_ready took {onReadyTimer}"
 	if is_first_time:
 		message += f"\nFull startup took {startupTimer}"
-	appinfo = await bot.application_info()
 
 	if not settings.debug:
 		await appinfo.owner.send(message)
@@ -185,8 +189,7 @@ async def initial_channel_connect(audio_cog, guildinfo):
 			print(f"weird usererror on connection to channel '{channel_id}': {e.message}")
 			raise
 	except asyncio.TimeoutError:
-		if not on_ready_has_run: # don't remove this if it got timed out from a re-initialization
-			guildinfo.voicechannel = None
+		guildinfo.voicechannel = None
 		raise
 	except Exception as e:
 		print(f"exception thrown on connection to channel ({channel_id}): {str(e)}")
@@ -256,6 +259,8 @@ async def on_command_error(ctx, error):
 			await ctx.send("Uh-oh, sumthin dun gone wrong 😱")
 			trace_string = await report_error(ctx.message, error, skip_lines=4)
 			if settings.debug:
+				if len(trace_string) > 1950:
+					trace_string = "TRACETOOBIG:" + trace_string[len(trace_string) - 1950:]
 				await ctx.send(f"```{trace_string}```")
 	except discord.errors.Forbidden:
 		try:

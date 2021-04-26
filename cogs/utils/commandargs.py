@@ -4,6 +4,8 @@ import discord
 from discord.ext import commands
 from .helpers import *
 from collections import OrderedDict
+import datetime
+import math
 
 
 hero_pattern_cache = {}
@@ -15,6 +17,15 @@ def get_cache_hero_pattern(dotabase, prefix):
 		pattern = f"\\b(?:{pattern})\\b"
 		pattern = re.compile(pattern, re.IGNORECASE)
 		hero_pattern_cache[prefix] = pattern
+		return pattern
+
+item_pattern = None
+def get_item_pattern(dotabase):
+	if item_pattern is not None:
+		return item_pattern
+	else:
+		pattern = f"\\b{dotabase.item_regex}\\b"
+		pattern = re.compile(pattern, re.IGNORECASE)
 		return pattern
 
 hero_stats_patterns = OrderedDict()
@@ -37,6 +48,22 @@ def get_cache_hero_stats_patterns(dotabase):
 		hero_stats_patterns = patterns
 	return hero_stats_patterns
 
+game_mode_patterns = {}
+def get_cache_game_mode_patterns():
+	global game_mode_patterns
+	if not game_mode_patterns:
+		patterns = OrderedDict()
+		dota_strings = read_json(settings.resource("json/dota_game_strings.json"))
+		for key in dota_strings:
+			prefix = "game_mode_"
+			if prefix not in key:
+				continue
+			mode_id = int(key.replace(prefix, ""))
+			name = dota_strings[key]
+			pattern = name.lower()
+			patterns[pattern] = mode_id
+		game_mode_patterns = patterns
+	return game_mode_patterns
 
 def clean_input(t):
 	return re.sub(r'[^a-z1-9\s]', r'', str(t).lower())
@@ -127,7 +154,7 @@ class DotaPlayer():
 			try:
 				player = await commands.MemberConverter().convert(ctx, str(player))
 			except commands.BadArgument:
-				raise CustomBadArgument(UserError("Ya gotta @mention a user who has been linked to a steam id, or just give me a their steam id"))
+				raise CustomBadArgument(UserError("Ya gotta @mention a user who has been linked to a steam id, or just give me their steam id"))
 
 		userinfo = botdata.userinfo(player.id)
 		if userinfo.steam is None:
@@ -175,31 +202,99 @@ class SimpleQueryArg(QueryArg):
 		self.value = value
 
 
+
+# a span of time to look in
 class TimeSpanArg(QueryArg):
-	def __init__(self):
-		super().__init__("date")
-		self.count = None
-		self.chunk = None
+	def __init__(self, ctx):
+		kwargs = {}
+		kwargs["post_filter"] = PostFilter("start_time", self.post_filter_checker)
+		super().__init__("date", **kwargs)
+		self.dotabase = ctx.bot.get_cog("Dotabase")
+		self.min = None
+		self.max = None
+		self.value = None
 
 	async def parse(self, text):
 		match = re.match(self.regex(), text)
-		self.count = int(match.group(2) or "1")
-		self.chunk = match.group(3)
-		self.value = self.days
+
+		if match.group("kind"):
+			chunk_count = float(match.group("count") or "1")
+			if chunk_count == 0:
+				self.value = 0
+				return
+			chunk_kind = match.group("kind")
+			if chunk_kind == "patch":
+				patch = self.dotabase.lookup_nth_patch(round(chunk_count))
+				self.min = patch.timestamp
+			else:
+				chunk_kind_value = {
+					"today": 1,
+					"day": 1,
+					"week": 7,
+					"month": 30,
+					"year": 365
+				}[chunk_kind]
+				print(f"using {chunk_count} of {chunk_kind}")
+				numdays = chunk_count * chunk_kind_value
+				min_datetime = datetime.datetime.now() - datetime.timedelta(days=numdays)
+				self.min = min_datetime
+		else:
+			patch_name = match.group("patch")
+			bounds = self.dotabase.lookup_patch_bounds(patch_name)
+			self.min = bounds[0]
+			self.max = bounds[1]
+			if match.group("since") is not None:
+				self.max = None
+
+
+	def post_filter_checker(self, p):
+		match_time = datetime.datetime.fromtimestamp(p["start_time"])
+		if self.min:
+			if match_time < self.min:
+				return False
+		if self.max:
+			if match_time > self.max:
+				return False
+		return True
 
 	@property
-	def days(self):
-		count = {
-			"today": 1,
-			"day": 1,
-			"week": 7,
-			"month": 30,
-			"year": 365
-		}[self.chunk]
-		return count * self.count
+	def value(self):
+		if self.min is None:
+			return None
+		diff = datetime.datetime.now() - self.min
+		return math.ceil(diff.days + 2) # doesn't matter much because this is just for the request, not for the post filter
+
+	@value.setter
+	def value(self, v):
+		pass
 
 	def regex(self):
-		return r"(?:in|over)? ?(?:the )?(this|last|past)? ?(\d+)? ?((?:to)?day|week|month|year)s?"
+		pattern = "(?:in|over|during)? ?"
+		pattern += f"((?P<since>since )?(?:patch )?(?P<patch>{self.dotabase.patches_regex})|(?:the )?(?:this|last|past)? ?(?P<count>\\d+\\.?\\d*)? ?(?P<kind>(?:to)?day|week|month|year|patch)e?s?)"
+		pattern = f"\\b{pattern}\\b"
+		pattern = re.compile(pattern, re.IGNORECASE)
+		return pattern
+
+all_item_slots = [ "item_0", "item_1", "item_2", "item_3", "item_4", "item_5", "item_neutral" ]
+class ItemArg(QueryArg):
+	def __init__(self, ctx, name, **kwargs):
+		kwargs["post_filter"] = PostFilter(all_item_slots, self.post_filter_checker)
+		super().__init__(name, **kwargs)
+		self.dotabase = ctx.bot.get_cog("Dotabase")
+		self.item = None
+
+	def post_filter_checker(self, p):
+		for slot in all_item_slots:
+			if p[slot] == self.value:
+				return True
+		return False
+
+	def regex(self):
+		return get_item_pattern(self.dotabase)
+
+	async def parse(self, text):
+		self.item = self.dotabase.lookup_item(text)
+		self.value = self.item.id
 
 class HeroArg(QueryArg):
 	def __init__(self, ctx, name, prefix, **kwargs):
@@ -272,11 +367,19 @@ class MatchFilter():
 			}),
 			QueryArg("significant", {
 				r"(significant|standard)": 1,
-				r"(not|non)(-| )?(significant|standard)": 0
+				r"(not|non|in|un)(-| )?(significant|standard)": 0
 			}),
+			QueryArg("game_mode", get_cache_game_mode_patterns()),
+			TimeSpanArg(ctx),
 			QueryArg("limit", {
 				r"(?:limit|count|show)? ?(\d{1,3})": lambda m: int(m.group(1))
 			}),
+			QueryArg("party_size", {
+				r"solo": 1
+			}),
+			QueryArg("_inparty", {
+				r"((in|with)? (a )?)?(party|group|friends|team)": True
+			}, PostFilter("party_size", lambda p: (p.get("party_size", 0) or 0) > 1)),
 			QueryArg("lane_role", {
 				r"safe( ?lane)?": 1,
 				r"mid(dle)?( ?lane)?": 2,
@@ -289,9 +392,9 @@ class MatchFilter():
 			QueryArg("_parsed", {
 				r"(is)?( |_)?parsed": True
 			}, PostFilter("version", lambda p: p.get("version") is not None)),
-			TimeSpanArg(),
 			PlayerArg(ctx, "included_account_id", "with "),
 			PlayerArg(ctx, "excluded_account_id", "without "),
+			ItemArg(ctx, "_item"),
 			HeroArg(ctx, "against_hero_id", "(?:against|vs) "),
 			HeroArg(ctx, "with_hero_id", "with "),
 			HeroArg(ctx, "hero_id", "(?:as )?"),
@@ -304,6 +407,8 @@ class MatchFilter():
 		playerarg = MatchFilter._get_arg(args, "_player")
 		if playerarg.player is None:
 			playerarg.set_player(await DotaPlayer.from_author(ctx))
+		if (MatchFilter._get_arg(args, "game_mode").has_value()): # custom thing to make sure to not hide unsignificant things
+			MatchFilter._get_arg(args, "significant").value = 0
 		if parser.text:
 			raise CustomBadArgument(UserError(f"I'm not sure what you mean by '{parser.text}'"))
 		return cls(args)
@@ -360,7 +465,10 @@ class MatchFilter():
 			projections = self.projections
 			for arg in self.args:
 				if arg.has_value() and arg.post_filter:
-					projections.append(arg.post_filter.key)
+					if isinstance(arg.post_filter.key, list):
+						projections.extend(arg.post_filter.key)
+					else:
+						projections.append(arg.post_filter.key)
 			if len(projections) > 0:
 				args.extend(map(lambda p: f"project={p}", projections))
 			if self.has_value("limit") and self.is_post_filter_required(): # if we need post_filter, limit afterwards

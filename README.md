@@ -22,7 +22,7 @@ Want to try out mangobyte on your server? [Click Here](https://discordapp.com/oa
 ## Commands
 
 <!-- COMMANDS_START -->
-Mangobyte currently has 87 commands, separated into 7 categories
+Mangobyte currently has 88 commands, separated into 7 categories
 
 #### General
 Commands that don't really fit into the other categories
@@ -109,6 +109,7 @@ Commands for displaying information about Dota 2 players and matches
 ?lastmatchstory  | Tells the story of the player's last match                 
 ?match           | Gets a summary of the dota match with the given id         
 ?matches         | Gets a list of your matches                                
+?matchgraph      | Creates a graph for a dota match                           
 ?matchids        | Gets a list of matchids that match the given filter        
 ?matchstory      | Tells the story of the match                               
 ?opendota        | Queries the opendota api                                   
@@ -161,9 +162,9 @@ Commands to help manage mangobyte on your server/guild
 
 ![hero_brew](/resource/images/readme/hero_brew.png)
 
-`?ability black hole`
+`?ability dream coil`
 
-![ability_black_hole](/resource/images/readme/ability_black_hole.png)
+![ability_dream_coil](/resource/images/readme/ability_dream_coil.png)
 
 `?item silver edge`
 
@@ -173,13 +174,17 @@ Commands to help manage mangobyte on your server/guild
 
 <img width="600px" src="/resource/images/readme/herotable_lvl20_effhp.png"/>
 
-`?lastmatch`
+`?lastmatch as skywrath this patch`
 
 ![lastmatch](/resource/images/readme/lastmatch.png)
 
 `?playerstats`
 
 ![playerstats](/resource/images/readme/playerstats.png)
+
+`?twenty`
+
+![twenty](/resource/images/readme/twenty.png)
 
 `?laning`
 

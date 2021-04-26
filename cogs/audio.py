@@ -122,7 +122,7 @@ class AudioPlayer:
 	async def queue_clip(self, clip, ctx):
 		if(self.voice is None):
 			print("tried to talk while not in voice channel")
-			raise UserError("not in voice channel m8")
+			raise AudioPlayerNotFoundError("not in voice channel m8")
 
 		self.clipqueue.put(clip)
 
@@ -512,6 +512,13 @@ class Audio(MangoCog):
 			guildinfo = botdata.guildinfo(message.guild)
 			if guildinfo.is_banned(message.author):
 				return # banned users cant talk
+			if message.author.bot:
+				if message.webhook_id:
+					if not guildinfo.allowwebhooks:
+						return # if this is a webhook then ignore it because we're not allowing it
+				else:
+					if message.author.id not in guildinfo.allowedbots:
+						return # ignore bots unless theyre explicitly allowed
 			ttschannel = guildinfo.ttschannel
 			if ttschannel == message.channel.id:
 				if message.content.startswith("//") or message.content.startswith("#"):
@@ -529,6 +536,14 @@ class Audio(MangoCog):
 					else:
 						await loggingdb.insert_message(message, "smarttts")
 						await self.do_smarttts(message.clean_content, message.guild)
+				except AudioPlayerNotFoundError as e:
+					if not guildinfo.ttschannelwarn:
+						return # just dont warn em if theyve said to not warn
+					try:
+						await message.channel.send(e.message)
+					except discord.errors.Forbidden as e:
+						print("on_message usererror blocked because permissions")
+						pass
 				except UserError as e:
 					try:
 						await message.channel.send(e.message)

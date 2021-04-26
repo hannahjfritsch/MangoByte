@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 from sqlalchemy.sql.expression import func
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, desc
 from __main__ import settings, httpgetter
 from cogs.utils.helpers import *
 from cogs.utils.clip import *
@@ -107,6 +107,8 @@ class Dotabase(MangoCog):
 		self.item_aliases = {}
 		self.leveled_hero_stats = [] # by level (0 is null, and 1-30 are filled in)
 		self.hero_regex = ""
+		self.item_regex = ""
+		self.patches_regex = ""
 		self.build_helpers()
 		self.vpkurl = "http://dotabase.dillerm.io/dota-vpk"
 		drawdota.init_dota_info(self.get_hero_infos(), self.get_item_infos(), self.get_ability_infos(), self.vpkurl)
@@ -120,6 +122,13 @@ class Dotabase(MangoCog):
 				self.hero_aliases[alias] = hero.id
 				self.hero_aliases[alias.replace(" ", "")] = hero.id
 
+		patches_patterns = []
+		for patch in session.query(Patch).filter(Patch.timestamp != None):
+			patches_patterns.append(patch.number.replace(".", "\\."))
+		self.patches_regex = f"(?:{'|'.join(patches_patterns)})"
+
+		item_patterns = []
+		secondary_item_patterns = []
 		for item in session.query(Item).filter(~Item.localized_name.contains("Recipe")):
 			aliases = item.aliases.split("|")
 			aliases.append(clean_input(item.localized_name))
@@ -127,6 +136,13 @@ class Dotabase(MangoCog):
 				if alias not in self.item_aliases:
 					self.item_aliases[alias] = item.id
 					self.item_aliases[alias.replace(" ", "")] = item.id
+			pattern = re.sub(r"[^a-z' ]", "", item.localized_name.lower())
+			pattern = pattern.replace("'", "'?")
+			if " " in pattern:
+				secondary_item_patterns.extend(pattern.split(" "))
+			item_patterns.append(pattern)
+		item_patterns.extend(secondary_item_patterns)
+		self.item_regex = f"(?:{'|'.join(item_patterns)})"
 
 		for crit in session.query(Criterion).filter(Criterion.matchkey == "Concept"):
 			self.criteria_aliases[crit.name.lower()] = crit.name
@@ -304,6 +320,44 @@ class Dotabase(MangoCog):
 				if text in item:
 					return self.item_aliases[item]
 		return None
+
+	def lookup_patch(self, patch_name):
+		query = session.query(Patch).filter(Patch.number == patch_name)
+		if query.count() > 0:
+			return query.first()
+		else:
+			return None
+
+	def lookup_nth_patch(self, n):
+		query = session.query(Patch).order_by(desc(Patch.timestamp))
+		if n == 1: 
+			# assume user wants latest MAJOR patch
+			for patch in query:
+				if not re.search(r"[a-zA-Z]", patch.number):
+					return patch
+		if n > query.count() or n < 0:
+			return None
+		else:
+			return query.all()[n - 1]
+
+	def lookup_patch_bounds(self, patch_name):
+		query = session.query(Patch).order_by(Patch.timestamp)
+		start = None
+		end = None
+
+		for patch in query:
+			if start is None:
+				if patch.number == patch_name:
+					start = patch.timestamp
+			else:
+				if re.sub(r"[a-z]", "", patch.number) != patch_name:
+					end = patch.timestamp
+					break
+		if end is None:
+			end = datetime.datetime.now()
+
+		return (start, end)
+
 
 	def get_hero_infos(self):
 		result = {}
@@ -1103,8 +1157,9 @@ class Dotabase(MangoCog):
 		hero = self.lookup_hero(name)
 		if hero:
 			for ability in hero.abilities:
-				if ability.scepter_description or ability.shard_description:
+				if ability.scepter_upgrades or ability.shard_upgrades or ability.scepter_grants or ability.shard_grants:
 					abilities.append(ability)
+
 			if len(abilities) == 0:
 				raise UserError(f"Couldn't find an aghs upgrade for {hero.localized_name}. Either they don't have one or I just can't find it.")
 		else:
@@ -1125,13 +1180,16 @@ class Dotabase(MangoCog):
 				icon_url = f"{self.vpkurl}/panorama/images/hud/reborn/aghsstatus_shard_on_psd.png"
 			for ability in abilities:
 				description = ability.scepter_description if upgrade_type == "scepter" else ability.shard_description
-				grantedby = ability.scepter_grants if upgrade_type == "scepter" else ability.shard_grants
-				if description == "":
-					continue
-				description = f"*{description}*\n"
+				is_grantedby = ability.scepter_grants if upgrade_type == "scepter" else ability.shard_grants
+				if description != "":
+					if is_grantedby:
+						description = f"**{description}**\n\n*{ability.description}*"
+					else:
+						description = f"*{description}*\n"
+
 				ability_special = json.loads(ability.ability_special, object_pairs_hook=OrderedDict)
 				formatted_attributes = []
-				if not grantedby:
+				if upgrade_type == "scepter" and ability.scepter_upgrades and not ability.scepter_grants:
 					for attribute in ability_special:
 						header = attribute.get("header")
 						if not (header and attribute.get("aghs_upgrade")):
@@ -1143,8 +1201,12 @@ class Dotabase(MangoCog):
 						text = f"**{header}** {value}"
 						if footer:
 							text += f" {footer}"
-						description += f"\n{text}"
+						if description != "":
+							description += "\n"
+						description += f"{text}"
 
+				if description == "":
+					continue
 				embed = discord.Embed(description=description)
 				title = f"{aghs_item.localized_name} ({ability.localized_name})"
 				embed.set_author(name=title, icon_url=icon_url)
@@ -1161,20 +1223,28 @@ class Dotabase(MangoCog):
 		products = query_filter_list(session.query(Item), Item.recipe, item.name).all()
 		components = []
 		if item.recipe:
-			components = item.recipe.split("|")
-			components = session.query(Item).filter(Item.name.in_(components)).all()
+			component_names = item.recipe.split("|")
+			found_components = session.query(Item).filter(Item.name.in_(component_names)).all()
+			for name in component_names:
+				for component in found_components:
+					if component.name == name:
+						components.append(component)
+						break
+
 
 		embed = discord.Embed()
+
+		embed.description = f"**Total Cost:** {self.get_emoji('gold')} {item.cost}"
 
 		if components:
 			value = ""
 			for i in components:
-				value += f"{i.localized_name}\n"
+				value += f"{i.localized_name} ({self.get_emoji('gold')} {i.cost})\n"
 			embed.add_field(name="Created from", value=value)
 		if products:
 			value = ""
 			for i in products:
-				value += f"{i.localized_name}\n"
+				value += f"{i.localized_name} ({self.get_emoji('gold')} {i.cost})\n"
 			embed.add_field(name="Can be made into", value=value)
 
 		title = item.localized_name
@@ -1276,30 +1346,32 @@ class Dotabase(MangoCog):
 		`{cmdpfx}courage`
 		`{cmdpfx}courage shadow fiend`"""
 
-		all_boots = [
-			"travel_boots",
-			"phase_boots",
-			"power_treads",
-			"arcane_boots",
-			"tranquil_boots",
-			"guardian_greaves"
-		]
+		all_boots = query_filter_list(session.query(Item), Item.recipe, "item_boots").all()
 
-		all_items = read_json(settings.resource("json/courage_items.json"))
-		random.shuffle(all_items)
-		items = all_items[0:5]
+		random.seed(datetime.datetime.now())
+		items = session.query(Item) \
+			.filter(~Item.localized_name.contains("Recipe")) \
+			.filter(~Item.localized_name.contains("Boots")) \
+			.filter(Item.recipe != None) \
+			.filter(Item.icon != None) \
+			.filter(Item.cost > 2000) \
+			.order_by(func.random()) \
+			.limit(5) \
+			.all()
 		items.append(random.choice(all_boots))
 		random.shuffle(items)
 
 		item_ids = []
 		for item in items:
-			item_ids.append(session.query(Item).filter(Item.name == f"item_{item}").first().id)
+			item_ids.append(item.id)
 		if hero:
 			hero_id = self.lookup_hero_id(hero)
 			if not hero_id:
 				raise UserError(f"Couldn't a hero called '{hero}'")
 		else:
 			hero_id = session.query(Hero).order_by(func.random()).first().id
+
+		print(item_ids)
 
 		image = discord.File(await drawdota.draw_courage(hero_id, item_ids), "courage.png")
 		await ctx.send(file=image)
@@ -1409,7 +1481,7 @@ class Dotabase(MangoCog):
 		`{cmdpfx}herotable attack speed level 21 descending`
 		"""
 		if table_args.stat is None:
-			raise UserError(f"Please select a stat to sort by. For a list of stats, see `{self.cmdpfx()}leveledstats`")
+			raise UserError(f"Please select a stat to sort by. For a list of stats, see `{self.cmdpfx(ctx)}leveledstats`")
 		if table_args.hero_level < 1 or table_args.hero_level > 30:
 			raise UserError("Please select a hero level between 1 and 30")
 		if table_args.hero_count < 2 or table_args.hero_count > 40:
@@ -1430,7 +1502,12 @@ class Dotabase(MangoCog):
 		if not hero:
 			raise UserError("That doesn't look like a hero")
 
-		abilities = list(filter(lambda a: a.slot is not None, hero.abilities))
+		abilities = []
+		for ability in list(filter(lambda a: a.slot is not None, hero.abilities)):
+			if not hero.id == 74: # invoker
+				if "hidden" in ability.behavior and not (ability.shard_grants or ability.scepter_grants):
+					continue
+			abilities.append(ability)
 
 		embed = discord.Embed()
 
@@ -1448,6 +1525,8 @@ class Dotabase(MangoCog):
 	@commands.command(aliases = ["rss"])
 	async def blog(self,ctx):
 		""" Pulls the newest blog post for Dota 2"""
+		await ctx.send("Sorry, Valve broke this for now.")
+		return # return cuz valve broke it
 		feed = await httpgetter.get(r'https://blog.dota2.com/feed', return_type="text")
 		blog = feedparser.parse(feed)
 		title = "Dota 2 Blog"
